@@ -1,0 +1,107 @@
+services:
+
+  app:
+    container_name: app_aquarius
+    build:
+      context: .
+      dockerfile: dockerfile.app
+    volumes:
+      - ./app/:/usr/src/app
+      - ./.env:/usr/src/app/.env
+    ports:
+      - "${APP_PORT}:3000"
+    # command: sh -c "npm install --force && npm run build && npm run start"
+    command: sh -c "npm install && npm run dev"
+    environment:
+      - NODE_ENV=development
+    restart: unless-stopped
+
+    networks:
+      - aquarius_default2
+
+  backend:
+    container_name: backend_aquarius
+    build:
+      context: .
+      dockerfile: dockerfile.backend
+    volumes:
+      - ./backend:/usr/src/backend
+      - ./.env:/usr/src/backend/.env
+      - ./app_data:/usr/src/app_data
+    command: sh -c "npm install && npm run build && npm run start"
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT}:5000"
+    environment:
+      - NODE_ENV=development
+      - KAFKA_BROKER=kafka:9092
+      - POSTGRES_HOST=db-aquarius
+      - POSTGRES_PORT=5432
+    depends_on:
+      - ${POSTGRES_NAME}
+      - redis
+      - ${MINIO_NAME}  # MinIOへの依存関係を追加
+    networks:
+      - aquarius_default2
+
+  db-aquarius:
+    container_name: ${POSTGRES_NAME}
+    image: postgres:18
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - ./db_data:/var/lib/postgresql/18/docker
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    networks:
+      - aquarius_default2
+
+  redis:
+    container_name: redis_aquarius
+    image: redis:latest
+    environment:
+      - ALLOW_EMPTY_PASSWORD=yes
+      - VALKEY_DISABLE_COMMANDS=FLUSHDB,FLUSHALL
+    restart: unless-stopped
+    ports:
+      - '${REDIS_PORT}:6379'
+    volumes:
+      - "./redis:/data"
+      - "./redis/redis.conf:/etc/redis/redis.conf"
+    command: ["redis-server", "/etc/redis/redis.conf"]
+    networks:
+      - aquarius_default2
+      
+  minio-aquarius:
+    image: minio/minio:latest
+    container_name: ${MINIO_NAME}
+    ports:
+      - '${MINIO_PORT_API}:9000'   # APIポートを公開
+      - '${MINIO_PORT_FRONT}:8900'
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD}
+    restart: unless-stopped
+    volumes:
+      - ./minio/data:/data
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/minio server /data/minio --address '0.0.0.0:9000' --console-address ':8900' &
+      sleep 10;
+      mc alias set myminio http://localhost:9000 ${MINIO_USER} ${MINIO_PASSWORD};
+      mc mb myminio/publicdata;
+      mc mb myminio/privatedata;
+      wait
+      "
+    deploy:
+      restart_policy:
+          condition: on-failure
+    networks:
+      - aquarius_default2
+
+networks:
+  aquarius_default2:
+    driver: bridge
